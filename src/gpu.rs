@@ -966,6 +966,7 @@ pub struct Gpu {
     next_uid: u64,
     bgl_cache: HashMap<(String, u32, u32), (BindGroupLayout, u64)>,
     empty_bgl: Option<(BindGroupLayout, u64)>,
+    f32_filterable: bool,
     pipelines: HashMap<Vec<i64>, PipeEntry>,
     pipe_jobs: Option<std::sync::mpsc::Sender<(u64, PipeJob)>>,
     pipe_results: std::sync::mpsc::Receiver<(u64, Option<RenderPipeline>)>,
@@ -1178,7 +1179,7 @@ impl Gpu {
             base, mem, ring, device, queue, adapter, surface, surface_format, surface_size: (0, 0),
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
-            bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: FifoCache::new(BG_LIMIT),
+            bgl_cache: HashMap::new(), empty_bgl: None, f32_filterable: features.contains(Features::FLOAT32_FILTERABLE), pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: FifoCache::new(BG_LIMIT),
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), f2d_pipeline: None, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
@@ -1877,7 +1878,7 @@ impl Gpu {
         if m.is_none() && ps_remap.is_none() && clip.is_none() { Some(ps.module.clone()) } else { m }
     }
 
-    fn layout_entry(b: &Binding, stage: u32) -> BindGroupLayoutEntry {
+    fn layout_entry(b: &Binding, stage: u32, f32_filterable: bool) -> BindGroupLayoutEntry {
         let visibility = match stage { 0 => ShaderStages::VERTEX, 1 => ShaderStages::FRAGMENT, _ => ShaderStages::COMPUTE };
         let ty = match b.kind {
             Kind::Uniform => BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: b.binding != 15, min_binding_size: None },
@@ -1887,7 +1888,7 @@ impl Gpu {
             Kind::SamplerCmp => BindingType::Sampler(SamplerBindingType::Comparison),
             Kind::Texture => BindingType::Texture {
                 sample_type: match b.sample {
-                    Sample::Float => TextureSampleType::Float { filterable: true },
+                    Sample::Float => TextureSampleType::Float { filterable: f32_filterable },
                     Sample::Unfilterable => TextureSampleType::Float { filterable: false },
                     Sample::Uint => TextureSampleType::Uint,
                     Sample::Sint => TextureSampleType::Sint,
@@ -1904,7 +1905,7 @@ impl Gpu {
     fn bgl_for(&mut self, prog: &Program, stage: u32, group: u32) -> (BindGroupLayout, u64) {
         let key = (prog.label.clone() + "#" + &prog.uid.to_string(), stage, group);
         if let Some(b) = self.bgl_cache.get(&key) { return b.clone(); }
-        let entries: Vec<_> = prog.info.bindings.iter().filter(|b| b.group == group).map(|b| Self::layout_entry(b, stage)).collect();
+        let entries: Vec<_> = prog.info.bindings.iter().filter(|b| b.group == group).map(|b| Self::layout_entry(b, stage, self.f32_filterable)).collect();
         let bgl = self.device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &entries });
         let uid = self.uid();
         self.bgl_cache.insert(key, (bgl.clone(), uid));
@@ -2856,7 +2857,7 @@ impl Gpu {
                     None => { self.compute.insert(key.clone(), None); self.skipped += 1; return; }
                 }
             };
-            let entries: Vec<_> = cprog.info.bindings.iter().filter(|b| b.group == 0).map(|b| Self::layout_entry(b, 2)).collect();
+            let entries: Vec<_> = cprog.info.bindings.iter().filter(|b| b.group == 0).map(|b| Self::layout_entry(b, 2, self.f32_filterable)).collect();
             let bgl = self.device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &entries });
             let layout = self.device.create_pipeline_layout(&PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
             let label = cprog.label.clone();
